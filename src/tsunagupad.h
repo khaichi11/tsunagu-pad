@@ -45,6 +45,7 @@ typedef struct {
     gboolean offer_sent;
     int kbps_now;               /* bitrate encoder saat ini (adaptif) */
     guint stats_timer;
+    guint lat_timer;            /* ringkasan latensi per tahap (debug) */
     Input *input;
 } App;
 

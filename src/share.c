@@ -386,6 +386,120 @@ static gboolean on_bus(GstBus *bus, GstMessage *m, gpointer data)
     return G_SOURCE_CONTINUE;
 }
 
+/* ---------- pengukuran latensi per tahap (TSUNAGUPAD_DEBUG) ---------- */
+
+/* Mencatat kapan setiap frame melewati sumber, masuk encoder, keluar encoder, dan
+ * keluar payloader, lalu mencetak ringkasannya tiap detik. Tracer GStreamer tidak
+ * cocok di sini: pada frame jarang ia mengukur jarak antar-frame, bukan penundaan.
+ * Encoder VA menggeser timestamp keluarannya dengan selisih tetap (dihitung dari
+ * frame pertama), dan boleh membuang frame; jadi pencocokan memakai timestamp
+ * ditambah selisih itu, bukan urutan. */
+typedef struct { gint64 t_src, t_enc_in, t_enc_out; } LatRec;
+
+static GMutex lat_lock;
+static GHashTable *lat_src;     /* pts sumber -> LatRec* */
+static GHashTable *lat_out;     /* pts keluar encoder -> LatRec* */
+static GHashTable *lat_in;      /* pts masuk encoder -> LatRec* */
+static gint64 lat_first_in = -1, lat_offset;
+static gboolean lat_offset_known;
+static struct { guint n; double cap_enc, enc, enc_pay, total, max_total; } lat;
+
+static guint lat_hash(gconstpointer k) { return g_int64_hash(k); }
+static gboolean lat_eq(gconstpointer a, gconstpointer b) { return g_int64_equal(a, b); }
+
+static GstPadProbeReturn on_lat_probe(GstPad *pad, GstPadProbeInfo *info, gpointer data)
+{
+    GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    guint stage = GPOINTER_TO_UINT(data);   /* 0 sumber, 1 masuk enc, 2 keluar enc, 3 keluar pay */
+    if (!GST_BUFFER_PTS_IS_VALID(buf))
+        return GST_PAD_PROBE_OK;
+    gint64 pts = (gint64) GST_BUFFER_PTS(buf);
+    gint64 now = g_get_monotonic_time();
+
+    g_mutex_lock(&lat_lock);
+    if (!lat_src) {
+        lat_src = g_hash_table_new_full(lat_hash, lat_eq, g_free, NULL);
+        lat_out = g_hash_table_new_full(lat_hash, lat_eq, g_free, NULL);
+        lat_in = g_hash_table_new_full(lat_hash, lat_eq, g_free, NULL);
+    }
+    if (stage == 0) {
+        LatRec *rec = g_new0(LatRec, 1);
+        rec->t_src = now;
+        gint64 *key = g_new(gint64, 1);
+        *key = pts;
+        g_hash_table_insert(lat_src, key, rec);
+        if (g_hash_table_size(lat_src) > 300)       /* frame yang dibuang antrean tidak pernah lanjut */
+            g_hash_table_remove_all(lat_src);
+    } else if (stage == 1) {
+        LatRec *rec = g_hash_table_lookup(lat_src, &pts);
+        if (rec) {
+            rec->t_enc_in = now;
+            g_hash_table_steal(lat_src, &pts);      /* kunci tetap dimiliki tabel; bocor kecil, hanya debug */
+            if (lat_first_in < 0)
+                lat_first_in = pts;
+            gint64 *key = g_new(gint64, 1);
+            *key = pts;
+            g_hash_table_insert(lat_in, key, rec);
+            if (g_hash_table_size(lat_in) > 300)
+                g_hash_table_remove_all(lat_in);
+        }
+    } else if (stage == 2) {
+        if (!lat_offset_known && lat_first_in >= 0) {
+            lat_offset = pts - lat_first_in;
+            lat_offset_known = TRUE;
+        }
+        gint64 in_pts = pts - lat_offset;
+        LatRec *rec = lat_offset_known ? g_hash_table_lookup(lat_in, &in_pts) : NULL;
+        if (rec) {
+            rec->t_enc_out = now;
+            g_hash_table_steal(lat_in, &in_pts);
+            gint64 *key = g_new(gint64, 1);
+            *key = pts;
+            g_hash_table_insert(lat_out, key, rec);
+            if (g_hash_table_size(lat_out) > 300)
+                g_hash_table_remove_all(lat_out);
+        }
+    } else {
+        LatRec *rec = g_hash_table_lookup(lat_out, &pts);
+        if (rec) {
+            lat.n++;
+            lat.cap_enc += (rec->t_enc_in - rec->t_src) / 1000.0;
+            lat.enc += (rec->t_enc_out - rec->t_enc_in) / 1000.0;
+            lat.enc_pay += (now - rec->t_enc_out) / 1000.0;
+            double total = (now - rec->t_src) / 1000.0;
+            lat.total += total;
+            lat.max_total = MAX(lat.max_total, total);
+            g_hash_table_steal(lat_out, &pts);
+            g_free(rec);
+        }
+    }
+    g_mutex_unlock(&lat_lock);
+    return GST_PAD_PROBE_OK;
+}
+
+static gboolean lat_report(gpointer data)
+{
+    g_mutex_lock(&lat_lock);
+    if (lat.n)
+        g_printerr("lat: frames=%u sumber->enc %.1f ms, enc %.1f ms, enc->pay %.1f ms, total %.1f ms (maks %.1f)\n",
+                   lat.n, lat.cap_enc / lat.n, lat.enc / lat.n, lat.enc_pay / lat.n, lat.total / lat.n,
+                   lat.max_total);
+    memset(&lat, 0, sizeof lat);
+    g_mutex_unlock(&lat_lock);
+    return G_SOURCE_CONTINUE;
+}
+
+static void attach_lat_probe(GstElement *el, const char *pad_name, guint stage)
+{
+    if (!el)
+        return;
+    GstPad *pad = gst_element_get_static_pad(el, pad_name);
+    if (pad) {
+        gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, on_lat_probe, GUINT_TO_POINTER(stage), NULL);
+        gst_object_unref(pad);
+    }
+}
+
 /* ---------- API ---------- */
 
 gboolean share_start(App *app, GError **error)
@@ -419,12 +533,12 @@ gboolean share_start(App *app, GError **error)
                                    "video/x-raw,max-framerate=%d/1", app->fps, app->fps);
         else
             caps = g_strdup_printf("video/x-raw,max-framerate=%d/1", app->fps);
-        src = g_strdup_printf("pipewiresrc fd=%d path=%u do-timestamp=true keepalive-time=500 ! "
+        src = g_strdup_printf("pipewiresrc name=src fd=%d path=%u do-timestamp=true keepalive-time=500 ! "
                               "capsfilter caps=\"%s\" ! videorate drop-only=true max-rate=%d ! video/x-raw(ANY)",
                               portal_pipewire_fd(app->portal), portal_node(app->portal), caps, app->fps);
         g_free(caps);
     } else
-        src = g_strdup_printf("ximagesrc use-damage=false show-pointer=true "
+        src = g_strdup_printf("ximagesrc name=src use-damage=false show-pointer=true "
                               "startx=%d starty=%d endx=%d endy=%d ! video/x-raw,framerate=%d/1",
                               app->rx, app->ry, app->rx + app->rw - 1, app->ry + app->rh - 1, app->fps);
     char *enc = encoder_fragment(app->enc_name, app->out_w, app->out_h, app->fps,
@@ -458,6 +572,26 @@ gboolean share_start(App *app, GError **error)
     app->enc = gst_bin_get_by_name(GST_BIN(pipeline), "enc");
     app->offer_sent = FALSE;
     playout_delay_attach(app->pay);
+    if (debug_enabled()) {
+        g_mutex_lock(&lat_lock);
+        lat_first_in = -1;
+        lat_offset_known = FALSE;
+        if (lat_src) {
+            g_hash_table_remove_all(lat_src);
+            g_hash_table_remove_all(lat_in);
+            g_hash_table_remove_all(lat_out);
+        }
+        g_mutex_unlock(&lat_lock);
+        GstElement *src_el = gst_bin_get_by_name(GST_BIN(pipeline), "src");
+        attach_lat_probe(src_el, "src", 0);
+        attach_lat_probe(app->enc, "sink", 1);
+        attach_lat_probe(app->enc, "src", 2);
+        attach_lat_probe(app->pay, "src", 3);
+        if (src_el)
+            gst_object_unref(src_el);
+        if (!app->lat_timer)
+            app->lat_timer = g_timeout_add_seconds(1, lat_report, NULL);
+    }
 
     Session *s = g_atomic_rc_box_new0(Session);
     s->app = app;

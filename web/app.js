@@ -27,6 +27,7 @@ if (query.get('k')) store.set('tsunagupad.token', token);
 const STRINGS = {
   en: {
     menu: 'Open the Tsunagu-Pad menu',
+    view_only: 'View only. Turn on Allow Remote Interaction on Ubuntu to control it.',
     typing: 'Type into Ubuntu',
     keyboard: 'Keyboard',
     fullscreen: 'Full screen',
@@ -52,6 +53,7 @@ const STRINGS = {
   },
   id: {
     menu: 'Buka menu Tsunagu-Pad',
+    view_only: 'Hanya menonton. Nyalakan Allow Remote Interaction di Ubuntu agar iPad bisa mengontrol.',
     typing: 'Ketik ke Ubuntu',
     keyboard: 'Keyboard',
     fullscreen: 'Layar penuh',
@@ -183,6 +185,7 @@ async function onSignal(msg) {
   switch (msg.type) {
     case 'welcome':
       info = msg;
+      $('viewonly').hidden = !!info.input;
       showKey('preparing', { spinner: true });
       break;
     case 'offer':

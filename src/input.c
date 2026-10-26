@@ -508,8 +508,7 @@ Input *input_new(App *app)
     Display *dpy = NULL;
     if (app->portal) {
         if (!portal_can_control(app->portal)) {
-            tsunagu_event("warning", "message",
-                          "GNOME belum mengizinkan kendali dari iPad (iPad hanya menonton). Nyalakan lagi dan aktifkan \"Allow Remote Interaction\" di jendela izin.", NULL);
+            tsunagu_event("input", "state", "denied", NULL);
             return NULL;
         }
     } else {

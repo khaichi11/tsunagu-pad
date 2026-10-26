@@ -36,6 +36,9 @@ button { font-family: inherit; letter-spacing: inherit; cursor: pointer; }
 .tools svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 @keyframes pop { from { opacity: 0; transform: scale(.92) translateY(-6px); } to { opacity: 1; transform: none; } }
 
+/* Pemberitahuan saat kendali belum diizinkan di Ubuntu */
+#viewonly { position: fixed; left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: min(520px, calc(100vw - 32px)); padding: 10px 18px; border: .5px solid var(--glass-border); border-radius: 999px; background: rgba(60, 40, 8, .82); -webkit-backdrop-filter: saturate(180%) blur(30px); backdrop-filter: saturate(180%) blur(30px); color: #ffd60a; font-size: 14px; font-weight: 500; text-align: center; box-shadow: var(--shadow); pointer-events: none; z-index: 6; }
+
 /* Layar sambutan dan status */
 #overlay { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: radial-gradient(120% 80% at 50% -10%, #16233d 0%, #0a0f1c 45%, #000 100%); z-index: 4; }
 .card { width: min(420px, 100%); padding: 34px 28px 28px; border: .5px solid var(--glass-border); border-radius: 32px; background: rgba(44, 44, 46, .55); -webkit-backdrop-filter: saturate(180%) blur(40px); backdrop-filter: saturate(180%) blur(40px); box-shadow: var(--shadow); text-align: center; }

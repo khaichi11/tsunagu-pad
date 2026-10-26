@@ -337,6 +337,7 @@ class TsunaguPadToggle extends QuickMenuToggle {
         this._starting = false;
         this._startedAt = 0;
         this._quickExits = 0;
+        this._inputDenied = false;
         this._status = '';
         this._urls = [];
         this._qrRows = '';
@@ -458,6 +459,11 @@ class TsunaguPadToggle extends QuickMenuToggle {
         this._copyItem = this._rowItem(copyButton);
         this.menu.addMenuItem(this._copyItem);
 
+        /* Izin kendali ditolak: nyalakan ulang agar GNOME menampilkan jendela izin lagi. */
+        this._allowItem = this.menu.addAction('Izinkan iPad mengontrol…', () => {
+            this._restart().catch(e => this._notify(e.message));
+        });
+
         /* Hotspot hostapd di AP virtual; Wi-Fi utama tetap tersambung. */
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._hotspotSwitch = new PopupMenu.PopupSwitchMenuItem('', false);
@@ -557,7 +563,7 @@ class TsunaguPadToggle extends QuickMenuToggle {
         if (this._starting)
             this.subtitle = 'Menyiapkan…';
         else if (running)
-            this.subtitle = this._status;
+            this.subtitle = this._inputDenied ? `${this._status} · hanya menonton` : this._status;
         else
             this.subtitle = share ? 'Ubuntu ke iPad' : 'iPad ke Ubuntu';
         this._panelIcon.visible = running;
@@ -581,6 +587,7 @@ class TsunaguPadToggle extends QuickMenuToggle {
         const showAirplay = running && this._daemonKind === 'receive';
         this._infoItem.visible = showQr || showAirplay;
         this._copyItem.visible = showQr;
+        this._allowItem.visible = running && this._daemonKind === 'share' && this._inputDenied;
         this._qr.visible = showQr;
         if (showQr) {
             this._qr.setRows(this._qrRows);
@@ -634,6 +641,7 @@ class TsunaguPadToggle extends QuickMenuToggle {
             this._daemon = daemon;
             this._daemonKind = kind;
             this._startedAt = GLib.get_monotonic_time();
+            this._inputDenied = false;
             this._status = kind === 'share' ? 'Menyiapkan…' : 'Menunggu iPad…';
             this._urls = [];
             this._qrRows = '';
@@ -725,6 +733,12 @@ class TsunaguPadToggle extends QuickMenuToggle {
                 break;
             case 'portal':
                 this._status = ev.state === 'waiting' ? 'Menunggu izin GNOME…' : 'Menyiapkan…';
+                break;
+            case 'input':
+                if (ev.state === 'denied') {
+                    this._inputDenied = true;
+                    this._notify('GNOME belum mengizinkan iPad mengontrol Ubuntu, jadi iPad hanya menonton. Pilih "Izinkan iPad mengontrol…" di menu, lalu nyalakan "Allow Remote Interaction".');
+                }
                 break;
             case 'stats':
                 /* Layar yang diam hampir tidak menghasilkan frame; itu bukan masalah. */
